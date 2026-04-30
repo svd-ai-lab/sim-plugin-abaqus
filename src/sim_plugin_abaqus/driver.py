@@ -100,7 +100,7 @@ def _version_from_info(abaqus_cmd: str) -> str | None:
 
 def _resolve_explicit_launcher(value: str) -> Path | None:
     """Resolve an explicit launcher env var to a concrete executable path."""
-    raw = value.strip().strip('"')
+    raw = value.strip().strip("\"'")
     if not raw:
         return None
 
@@ -200,11 +200,15 @@ _INSTALL_FINDERS = [
 def _scan_abaqus_installs() -> list[SolverInstall]:
     """Find every Abaqus installation on this host. Pure stdlib."""
     found: dict[str, SolverInstall] = {}
+    explicit_installs = _explicit_installs_from_env()
+    explicit_keys: list[str] = []
 
-    for install in _explicit_installs_from_env():
+    for install in explicit_installs:
         bat = install.extra.get("bat")
         if bat:
-            found[str(Path(bat).resolve())] = install
+            key = str(Path(bat).resolve())
+            found[key] = install
+            explicit_keys.append(key)
 
     for finder in _INSTALL_FINDERS:
         try:
@@ -234,7 +238,13 @@ def _scan_abaqus_installs() -> list[SolverInstall]:
                 extra={"bat": str(bat)},
             )
 
-    return sorted(found.values(), key=lambda i: i.version, reverse=True)
+    explicit = [found[key] for key in explicit_keys if key in found]
+    discovered = [
+        install
+        for key, install in found.items()
+        if key not in set(explicit_keys)
+    ]
+    return explicit + sorted(discovered, key=lambda i: i.version, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +268,8 @@ class AbaqusDriver:
         self._abaqus_bat: str | None = None
         self._run_count = 0
         self._last_result: dict | None = None
+        self._last_run_started_at: float | None = None
+        self._snippet_timeout_s = 600.0
 
     @property
     def name(self) -> str:
@@ -388,7 +400,12 @@ class AbaqusDriver:
 
     # -- output inspection ----------------------------------------------------
 
-    def _collect_artifacts(self, work_dir: Path, stem: str | None = None) -> list[dict]:
+    def _collect_artifacts(
+        self,
+        work_dir: Path,
+        stem: str | None = None,
+        modified_since: float | None = None,
+    ) -> list[dict]:
         """Return Abaqus artifacts in a workspace without opening binary files."""
         artifacts: list[dict] = []
         try:
@@ -402,48 +419,61 @@ class AbaqusDriver:
             if stem and path.stem != stem:
                 continue
             try:
-                size = path.stat().st_size
+                stat = path.stat()
             except OSError:
                 size = 0
+                mtime = 0.0
+            else:
+                size = stat.st_size
+                mtime = stat.st_mtime
+            if modified_since is not None and mtime < modified_since:
+                continue
             artifacts.append({
                 "path": str(path),
                 "kind": path.suffix.lower().lstrip("."),
                 "size": size,
+                "modified_at": mtime,
             })
         return artifacts
 
-    def _scan_diagnostics(self, work_dir: Path, stem: str | None = None) -> list[dict]:
+    def _scan_diagnostics(
+        self,
+        work_dir: Path,
+        stem: str | None = None,
+        modified_since: float | None = None,
+    ) -> list[dict]:
         """Extract high-signal warnings/errors from Abaqus text outputs."""
         diagnostics: list[dict] = []
-        for artifact in self._collect_artifacts(work_dir, stem=stem):
+        for artifact in self._collect_artifacts(work_dir, stem=stem, modified_since=modified_since):
             suffix = Path(artifact["path"]).suffix.lower()
             if suffix not in {".dat", ".msg", ".sta", ".log"}:
                 continue
             path = Path(artifact["path"])
             try:
-                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                fh = path.open("r", encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            for lineno, line in enumerate(lines, start=1):
-                text = line.strip()
-                if not text:
-                    continue
-                upper = text.upper()
-                level = None
-                if "ERROR" in upper or "ABORT" in upper or "TERMINATED" in upper:
-                    level = "error"
-                elif "WARNING" in upper:
-                    level = "warning"
-                if level is None:
-                    continue
-                diagnostics.append({
-                    "level": level,
-                    "message": text[:500],
-                    "source": str(path),
-                    "line": lineno,
-                })
-                if len(diagnostics) >= 50:
-                    return diagnostics
+            with fh:
+                for lineno, line in enumerate(fh, start=1):
+                    text = line.strip()
+                    if not text:
+                        continue
+                    upper = text.upper()
+                    level = None
+                    if "ERROR" in upper or "ABORT" in upper or "TERMINATED" in upper:
+                        level = "error"
+                    elif "WARNING" in upper:
+                        level = "warning"
+                    if level is None:
+                        continue
+                    diagnostics.append({
+                        "level": level,
+                        "message": text[:500],
+                        "source": str(path),
+                        "line": lineno,
+                    })
+                    if len(diagnostics) >= 50:
+                        return diagnostics
         return diagnostics
 
     # -- run_file -------------------------------------------------------------
@@ -519,6 +549,7 @@ class AbaqusDriver:
         mode: str = "cae",
         ui_mode: str = "no_gui",
         workspace: str | None = None,
+        snippet_timeout: float | int | str | None = None,
         **kwargs,
     ) -> dict:
         """Create a file-backed Abaqus/CAE authoring session.
@@ -537,6 +568,10 @@ class AbaqusDriver:
         self._session_mode = mode or "cae"
         self._session_ui_mode = ui_mode or "no_gui"
         self._abaqus_bat = installs[0].extra.get("bat", "abaqus")
+        if snippet_timeout is not None:
+            self._snippet_timeout_s = float(snippet_timeout)
+        else:
+            self._snippet_timeout_s = 600.0
         root = Path(workspace) if workspace else Path.cwd() / ".sim" / "abaqus" / self._session_id
         root.mkdir(parents=True, exist_ok=True)
         self._session_workspace = root
@@ -552,6 +587,7 @@ class AbaqusDriver:
             "workspace": str(root),
             "cae_path": str(self._session_cae),
             "persistence": "file-backed-cae",
+            "snippet_timeout_s": self._snippet_timeout_s,
         }
 
     def _require_session(self) -> tuple[Path, Path, str]:
@@ -567,6 +603,8 @@ class AbaqusDriver:
         result_path = workspace / f"result_{seq:04d}.json"
         snippet_path.write_text(code, encoding="utf-8")
 
+        # The supported compatibility profiles use Abaqus Python with the
+        # encoding= keyword available. Revisit if adding pre-2024 profiles.
         wrapper = f'''# Auto-generated by sim-plugin-abaqus.
 from __future__ import print_function
 
@@ -663,8 +701,19 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
             capture_output=True,
             text=True,
             cwd=str(wrapper_path.parent),
-            timeout=600,
+            timeout=self._snippet_timeout_s,
         )
+
+    def _payload_from_stdout_marker(self, stdout: str) -> dict:
+        for line in reversed(stdout.splitlines()):
+            line = line.strip()
+            if not line.startswith("__SIM_RESULT__"):
+                continue
+            try:
+                return json.loads(line[len("__SIM_RESULT__"):])
+            except json.JSONDecodeError:
+                return {}
+        return {}
 
     def run(self, code: str, label: str = "") -> dict:
         """Execute Abaqus/CAE Python against the persistent .cae state."""
@@ -678,6 +727,8 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
             }
 
         wrapper_path, result_path = self._write_cae_wrapper(code, label or "snippet")
+        scan_since = time.time()
+        self._last_run_started_at = scan_since
         start = time.monotonic()
         try:
             proc = self._run_cae_wrapper(wrapper_path)
@@ -701,10 +752,12 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
                 payload = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 payload = {}
+        if not payload:
+            payload = self._payload_from_stdout_marker(proc.stdout or "")
 
         ok = proc.returncode == 0 and payload.get("ok", False) is True
-        diagnostics = self._scan_diagnostics(workspace)
-        artifacts = self._collect_artifacts(workspace)
+        diagnostics = self._scan_diagnostics(workspace, modified_since=scan_since)
+        artifacts = self._collect_artifacts(workspace, modified_since=scan_since)
         errors = [
             d["message"]
             for d in diagnostics
@@ -727,7 +780,11 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
             "errors": errors,
         }
         if not result["ok"]:
-            result["message"] = payload.get("error") or proc.stderr.strip() or "Abaqus CAE snippet failed"
+            result["message"] = (
+                payload.get("error")
+                or proc.stderr.strip()
+                or "Abaqus CAE snippet failed without a result payload"
+            )
             if payload.get("traceback"):
                 result["traceback"] = payload["traceback"]
 
@@ -747,6 +804,7 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
                 "cae_path": str(self._session_cae) if self._session_cae else None,
                 "run_count": self._run_count,
                 "last_ok": None if self._last_result is None else self._last_result.get("ok"),
+                "snippet_timeout_s": self._snippet_timeout_s,
             }
         if name in {"cae.model_summary", "model.summary"}:
             summary = (self._last_result or {}).get("model_summary")
@@ -766,7 +824,10 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
         if name in {"job.latest", "job.diagnostics"}:
             if self._session_workspace is None:
                 return {"connected": False, "diagnostics": []}
-            diagnostics = self._scan_diagnostics(self._session_workspace)
+            diagnostics = self._scan_diagnostics(
+                self._session_workspace,
+                modified_since=self._last_run_started_at,
+            )
             return {
                 "connected": True,
                 "diagnostics": diagnostics,
@@ -781,7 +842,6 @@ print("__SIM_RESULT__" + json.dumps(payload, default=str, sort_keys=True))
         self._session_cae = None
         self._abaqus_bat = None
         self._last_result = None
+        self._last_run_started_at = None
         self._run_count = 0
-        if sid is None:
-            return {"ok": True, "disconnected": True}
-        return {"ok": True, "disconnected": True}
+        return {"ok": True, "session_id": sid, "disconnected": True}
