@@ -35,6 +35,19 @@ _ABAQUS_IMPORT_RE = re.compile(
 
 _INP_KEYWORD_RE = re.compile(r"^\*\w+", re.MULTILINE)
 
+_EXPLICIT_LAUNCHER_ENV_VARS = (
+    "SIM_ABAQUS_COMMAND",
+    "ABAQUS_COMMAND",
+    "ABAQUS_BAT_PATH",
+)
+
+_NOT_INSTALLED_HINT = (
+    "No Abaqus installation detected on this host. The driver looks for "
+    "abq20XX.bat/abaqus.bat in standard SIMULIA Commands directories and "
+    "on PATH. If Abaqus is installed elsewhere, set SIM_ABAQUS_COMMAND to "
+    "the full launcher path, e.g. C:\\SIMULIA\\Commands\\abq2026.bat."
+)
+
 
 def _find_abaqus_bat(commands_dir: Path) -> Path | None:
     """Return the highest-version abqNNNN.bat in a Commands directory."""
@@ -69,6 +82,48 @@ def _version_from_info(abaqus_cmd: str) -> str | None:
     # Parse "Abaqus 2026" from output
     m = re.search(r"Abaqus\s+(\d{4})", result.stdout)
     return m.group(1) if m else None
+
+
+def _resolve_explicit_launcher(value: str) -> Path | None:
+    """Resolve an explicit launcher env var to a concrete executable path."""
+    raw = value.strip().strip('"')
+    if not raw:
+        return None
+
+    p = Path(raw)
+    if p.is_file():
+        return p
+    if p.is_dir():
+        return _find_abaqus_bat(p) or ((p / "abaqus.bat") if (p / "abaqus.bat").is_file() else None)
+
+    found = shutil.which(raw)
+    return Path(found) if found else None
+
+
+def _explicit_installs_from_env() -> list[SolverInstall]:
+    """Honor user-provided launcher paths before probing default locations."""
+    installs: list[SolverInstall] = []
+    seen: set[str] = set()
+    for var in _EXPLICIT_LAUNCHER_ENV_VARS:
+        val = os.environ.get(var)
+        if not val:
+            continue
+        launcher = _resolve_explicit_launcher(val)
+        if launcher is None:
+            continue
+        key = str(launcher.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        version = _version_from_bat_name(launcher) or _version_from_info(str(launcher)) or "unknown"
+        installs.append(SolverInstall(
+            name="abaqus",
+            version=version,
+            path=str(launcher.parent),
+            source=f"env:{var}",
+            extra={"bat": str(launcher)},
+        ))
+    return installs
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +186,11 @@ _INSTALL_FINDERS = [
 def _scan_abaqus_installs() -> list[SolverInstall]:
     """Find every Abaqus installation on this host. Pure stdlib."""
     found: dict[str, SolverInstall] = {}
+
+    for install in _explicit_installs_from_env():
+        bat = install.extra.get("bat")
+        if bat:
+            found[str(Path(bat).resolve())] = install
 
     for finder in _INSTALL_FINDERS:
         try:
@@ -274,7 +334,7 @@ class AbaqusDriver:
                 solver="abaqus",
                 version=None,
                 status="not_installed",
-                message="No Abaqus installation detected on this host",
+                message=_NOT_INSTALLED_HINT,
             )
         top = installs[0]
         return ConnectionInfo(
@@ -312,7 +372,7 @@ class AbaqusDriver:
         """
         installs = self.detect_installed()
         if not installs:
-            raise RuntimeError("Abaqus is not installed on this host")
+            raise RuntimeError(_NOT_INSTALLED_HINT)
 
         abaqus_bat = installs[0].extra.get("bat", "abaqus")
         suffix = script.suffix.lower()

@@ -84,6 +84,7 @@ class TestConnect:
         monkeypatch.setattr(driver, "detect_installed", lambda: [])
         info = driver.connect()
         assert info.status == "not_installed"
+        assert "SIM_ABAQUS_COMMAND" in info.message
 
     def test_connect_found(self, monkeypatch):
         """When abaqus found -> status='ok', version populated."""
@@ -105,6 +106,36 @@ class TestConnect:
         info = driver.connect()
         assert info.status == "ok"
         assert info.version is not None
+
+    def test_explicit_launcher_env_path(self, monkeypatch, tmp_path):
+        """SIM_ABAQUS_COMMAND points at an exact launcher outside defaults."""
+        import sim_plugin_abaqus.driver as drv
+
+        bat = tmp_path / "custom_abaqus.bat"
+        bat.write_text("@echo off\n", encoding="utf-8")
+        monkeypatch.setattr(drv, "_INSTALL_FINDERS", [])
+        monkeypatch.setenv("SIM_ABAQUS_COMMAND", str(bat))
+
+        installs = AbaqusDriver().detect_installed()
+
+        assert len(installs) == 1
+        assert installs[0].source == "env:SIM_ABAQUS_COMMAND"
+        assert installs[0].extra["bat"] == str(bat)
+
+    def test_explicit_launcher_env_directory_prefers_versioned_bat(self, monkeypatch, tmp_path):
+        """ABAQUS_BAT_PATH can point at a Commands directory."""
+        import sim_plugin_abaqus.driver as drv
+
+        (tmp_path / "abaqus.bat").write_text("@echo off\n", encoding="utf-8")
+        bat = tmp_path / "abq2026.bat"
+        bat.write_text("@echo off\n", encoding="utf-8")
+        monkeypatch.setattr(drv, "_INSTALL_FINDERS", [])
+        monkeypatch.setenv("ABAQUS_BAT_PATH", str(tmp_path))
+
+        installs = AbaqusDriver().detect_installed()
+
+        assert installs[0].version == "2026"
+        assert installs[0].extra["bat"] == str(bat)
 
 
 class TestParseOutput:

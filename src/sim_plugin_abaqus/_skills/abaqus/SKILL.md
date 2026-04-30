@@ -21,6 +21,11 @@ The driver runs these via subprocess (`abaqus job=X input=file.inp
 interactive` or `abaqus cae noGUI=script.py`). No Python SDK is imported
 into the sim process.
 
+This is **not** the Ansys Mechanical plugin. Do not route Abaqus `.inp`
+decks or Abaqus/CAE Python scripts through `solver=mechanical`; use
+`solver=abaqus` for one-shot Abaqus execution and `solver=mechanical` only
+for PyMechanical / Ansys Mechanical sessions.
+
 ---
 
 ## base/ — always relevant
@@ -41,6 +46,11 @@ into the sim process.
 
 ## Hard constraints (apply to every session)
 
+0. **Availability first.** Run `sim check abaqus` before creating files. If
+   it reports `not_installed`, do not keep trying random paths. Ask the user
+   to install Abaqus or set `SIM_ABAQUS_COMMAND` / `ABAQUS_COMMAND` /
+   `ABAQUS_BAT_PATH` to the exact launcher, for example
+   `C:\SIMULIA\Commands\abq2026.bat`.
 1. **Never invent Category A defaults.** Geometry, materials, BCs,
    analysis type, acceptance criteria — if missing, ask the user.
 2. **Acceptance != exit code.** Validate against physics-based criteria
@@ -49,6 +59,10 @@ into the sim process.
    convention. Always include `*HEADING`.
 4. **Working directory matters.** Abaqus creates output files (.dat, .odb,
    .msg, .sta) next to the input file. Use `cwd` appropriately.
+5. **No persistent GUI session.** This plugin is a one-shot subprocess
+   wrapper. Prefer composing input decks/CAE scripts, `sim lint`, `sim run`,
+   and `.dat`/`.odb` inspection over adding sim-cli surface area unless a
+   repeated lifecycle or visibility problem truly needs product support.
 
 ---
 

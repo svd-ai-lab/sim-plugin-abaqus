@@ -10,6 +10,14 @@ pip install git+https://github.com/svd-ai-lab/sim-plugin-abaqus@main
 
 You also need a working Abaqus installation on the same host (the driver invokes `abaqus.bat` / `abqNNNN.bat` via subprocess). See [LICENSE-NOTICE.md](LICENSE-NOTICE.md).
 
+If Abaqus is installed but not on PATH or in a standard SIMULIA Commands
+directory, point the driver at the launcher explicitly:
+
+```powershell
+$env:SIM_ABAQUS_COMMAND = 'C:\SIMULIA\Commands\abq2026.bat'
+sim check abaqus
+```
+
 After install, sim-cli auto-discovers the driver:
 
 ```bash
@@ -36,6 +44,12 @@ Execution is pure subprocess — the driver never imports Abaqus internals (whic
 
 - Input decks (`.inp`): `abaqus job=<name> input=<file> interactive`
 - CAE Python scripts (`.py`): `abaqus cae noGUI=<file>`
+
+This plugin is intentionally one-shot. It does not provide a persistent
+`sim connect` / `sim exec` GUI session; agents should compose `.inp` or
+CAE Python files with `sim lint`, `sim run --solver abaqus`, and output-file
+inspection. Use `sim-plugin-mechanical` only for Ansys Mechanical/PyMechanical
+workflows, not for Abaqus input decks or CAE scripts.
 
 ## Supported versions
 
