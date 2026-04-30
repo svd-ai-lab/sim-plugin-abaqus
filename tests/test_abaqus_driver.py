@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
+from sim.driver import SolverInstall
 
 from sim_plugin_abaqus import AbaqusDriver
 
@@ -168,3 +170,107 @@ class TestRunFile:
         monkeypatch.setattr(driver, "detect_installed", lambda: [])
         with pytest.raises(RuntimeError, match="(?i)abaqus"):
             driver.run_file(FIXTURES / "abaqus_good.py")
+
+    def test_run_file_attaches_artifacts_and_diagnostics(self, monkeypatch, tmp_path):
+        inp = tmp_path / "model.inp"
+        inp.write_text("*HEADING\n*STEP\n*STATIC\n*END STEP\n", encoding="utf-8")
+        (tmp_path / "model.msg").write_text("***WARNING: check mesh quality\n", encoding="utf-8")
+        (tmp_path / "model.odb").write_bytes(b"odb")
+
+        driver = AbaqusDriver()
+        monkeypatch.setattr(
+            driver,
+            "detect_installed",
+            lambda: [
+                SolverInstall(
+                    name="abaqus",
+                    version="2026",
+                    path="C:/SIMULIA/Commands",
+                    source="test",
+                    extra={"bat": "abaqus"},
+                )
+            ],
+        )
+        monkeypatch.setattr(
+            "sim_plugin_abaqus.driver.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""),
+        )
+
+        result = driver.run_file(inp)
+
+        assert result.ok is True
+        assert any(a["kind"] == "odb" for a in result.artifacts)
+        assert any(d["level"] == "warning" for d in result.diagnostics)
+
+
+class TestAuthoringSession:
+    def _install(self):
+        return SolverInstall(
+            name="abaqus",
+            version="2026",
+            path="C:/SIMULIA/Commands",
+            source="test",
+            extra={"bat": "abaqus"},
+        )
+
+    def test_launch_creates_file_backed_session(self, monkeypatch, tmp_path):
+        driver = AbaqusDriver()
+        monkeypatch.setattr(driver, "detect_installed", lambda: [self._install()])
+
+        info = driver.launch(mode="cae", ui_mode="no_gui", workspace=str(tmp_path))
+        summary = driver.query("session.summary")
+
+        assert info["ok"] is True
+        assert info["persistence"] == "file-backed-cae"
+        assert summary["connected"] is True
+        assert summary["workspace"] == str(tmp_path)
+        assert summary["cae_path"].endswith("session.cae")
+
+    def test_run_executes_wrapper_and_updates_inspection(self, monkeypatch, tmp_path):
+        driver = AbaqusDriver()
+        monkeypatch.setattr(driver, "detect_installed", lambda: [self._install()])
+        driver.launch(workspace=str(tmp_path))
+
+        def fake_run(wrapper_path):
+            result_path = wrapper_path.parent / "result_0001.json"
+            result_path.write_text(
+                json.dumps({
+                    "ok": True,
+                    "result": {"created": "beam"},
+                    "model_summary": {
+                        "models": {
+                            "Model-1": {
+                                "parts": ["Beam"],
+                                "materials": ["Steel"],
+                                "sections": [],
+                                "steps": ["Load"],
+                                "loads": ["TipLoad"],
+                                "boundary_conditions": ["Fixed"],
+                                "instances": ["Beam-1"],
+                            }
+                        },
+                        "jobs": ["BeamJob"],
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (wrapper_path.parent / "session.cae").write_bytes(b"cae")
+            return subprocess.CompletedProcess(["abaqus"], 0, stdout="done", stderr="")
+
+        monkeypatch.setattr(driver, "_run_cae_wrapper", fake_run)
+
+        result = driver.run("_sim_result = {'created': 'beam'}", label="build")
+        model_summary = driver.query("cae.model_summary")
+        files = driver.query("workdir.files")
+
+        assert result["ok"] is True
+        assert result["result"] == {"created": "beam"}
+        assert model_summary["available"] is True
+        assert model_summary["model_summary"]["models"]["Model-1"]["parts"] == ["Beam"]
+        assert any(f["kind"] == "cae" for f in files["files"])
+
+    def test_run_without_launch_is_readable_failure(self):
+        result = AbaqusDriver().run("print('hello')")
+
+        assert result["ok"] is False
+        assert result["error_code"] == "session_not_connected"

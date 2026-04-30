@@ -50,6 +50,7 @@ Issues = "https://github.com/svd-ai-lab/sim-plugin-abaqus/issues"
 packages = ["src/sim_plugin_abaqus"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
   "integration: tests that build wheels or touch external tooling",
 ]

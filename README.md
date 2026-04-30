@@ -40,20 +40,23 @@ abaqus = "sim_plugin_abaqus:skills_dir"
 
 `sim.drivers` exposes the driver class; `sim.skills` exposes a directory of skill files bundled inside the wheel.
 
-Execution is pure subprocess — the driver never imports Abaqus internals (which live in Abaqus's own embedded Python, not the system Python):
+Execution is pure subprocess — the driver never imports Abaqus internals
+into the sim process (Abaqus modules live in Abaqus's own embedded Python):
 
 - Input decks (`.inp`): `abaqus job=<name> input=<file> interactive`
 - CAE Python scripts (`.py`): `abaqus cae noGUI=<file>`
 
-This plugin is intentionally one-shot. It does not provide a persistent
-`sim connect` / `sim exec` GUI session; agents should compose `.inp` or
-CAE Python files with `sim lint`, `sim run --solver abaqus`, and output-file
-inspection. Use `sim-plugin-mechanical` only for Ansys Mechanical/PyMechanical
-workflows, not for Abaqus input decks or CAE scripts.
+For iterative CAE authoring, the plugin also supports a file-backed
+`sim connect` / `sim exec` workflow. Each snippet runs inside Abaqus/CAE,
+loads the session `.cae` database, mutates it, saves it back, and returns
+model/workspace diagnostics for `sim inspect`.
+
+Use `sim-plugin-mechanical` only for Ansys Mechanical/PyMechanical workflows,
+not for Abaqus input decks or CAE scripts.
 
 ## Supported versions
 
-See [`src/sim_plugin_abaqus/compatibility.yaml`](src/sim_plugin_abaqus/compatibility.yaml) for the version matrix. The current profile covers Abaqus 2026.
+See [`src/sim_plugin_abaqus/compatibility.yaml`](src/sim_plugin_abaqus/compatibility.yaml) for the version matrix. The current profiles cover Abaqus 2025 and Abaqus 2026.
 
 ## Develop
 
