@@ -1,6 +1,6 @@
 ---
 name: abaqus-sim
-description: Use when the user asks Codex, Claude Code, ChatGPT-style coding agents, or another AI agent to automate, inspect, run, or debug Abaqus. Choose the simplest real Abaqus control path first: existing artifacts, direct vendor launchers/batch commands, Abaqus/CAE noGUI, or sim-cli when standardized execution, diagnostics, session handling, and artifact reporting are useful. Requires a user-owned Abaqus installation.
+description: "Use when the user asks Codex, Claude Code, ChatGPT-style coding agents, or another AI agent to automate, inspect, run, or debug Abaqus. Choose the simplest real Abaqus control path first: existing artifacts, direct vendor launchers/batch commands, Abaqus/CAE noGUI, or sim-cli when standardized execution, diagnostics, session handling, and artifact reporting are useful. Requires a user-owned Abaqus installation."
 ---
 
 # abaqus-sim
@@ -133,6 +133,32 @@ should contain solver-rendered contour images, deformed-shape views, modal
 views, or animations when requested. `output/` should contain machine-readable
 metrics and extracted tables. `report/` should reference those artifacts by
 path and state which files support each conclusion.
+
+---
+
+## Long-running execution and recovery
+
+Keep bounded Abaqus work in the foreground when it fits the active tool-call
+budget. Use a settled input deck, CAE noGUI script, or background process only
+when the run is expected to outlive that budget, must continue across agent
+turns, or the user explicitly asks for background execution.
+
+For a long run, use a stable job name and absolute working/output paths so the
+agent can inspect it later. A shell or tool timeout ends that observation call;
+it does not prove Abaqus stopped. Before submitting the same job again, check
+the existing launcher/solver process, `.sta` progress, `.msg` and `.dat`
+diagnostics, and `.odb` or other expected artifact timestamps.
+
+Confirm process ownership from the job name, executable and full command line,
+start time, working directory, and output targets. Prefer Abaqus-native job
+cancellation; otherwise stop only the exact confirmed process or process tree.
+Never terminate every Abaqus, Standard, or Explicit process by name.
+
+Treat a successful process exit as only one completion signal. Confirm the
+Abaqus completion marker and usable expected artifacts before claiming the
+analysis completed. Use *resume* only when an Abaqus restart/checkpoint artifact
+can actually continue the analysis; without one, describe a new submission as
+a restart.
 
 ---
 
