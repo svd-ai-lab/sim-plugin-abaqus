@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **This repository has moved.** `sim-plugin-abaqus` is now developed in [svd-ai-lab/sim-cli](https://github.com/svd-ai-lab/sim-cli/tree/main/plugins/abaqus) under `plugins/abaqus`. This repository is archived and read-only; please open issues and pull requests in sim-cli.
+>
+> Install: `uv add sim-cli-core sim-plugin-abaqus`
+
 # sim-plugin-abaqus
 
 Use Codex, Claude Code, or another AI agent to work with
